@@ -37,7 +37,7 @@ type EvalMeta = {
   latencyMs: number;
 };
 
-const DEFAULT_COMPARE_MODEL = 'openai/gpt-5.4-mini';
+const DEFAULT_COMPARE_MODEL = 'openai/gpt-4o-mini';
 
 async function callDecision<T>(
   payload: object,
