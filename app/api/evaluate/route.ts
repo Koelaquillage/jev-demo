@@ -65,13 +65,10 @@ export async function POST(request: Request) {
   }
 
   try {
-    const result = await evaluate({
+        const result = await evaluate({
       model: 'typesafe-ai/jev',
       state,
       questions: { result: question as never },
-      providerOptions: {
-        gateway: { zeroDataRetention: true },
-      },
     });
 
     const confidence = (
