@@ -29,7 +29,9 @@ type ChoiceAnswer = { type: 'choice'; choice: string; probabilities: Record<stri
 type ScoreAnswer = { type: 'score'; score: number; probabilities: Record<string, number> };
 type BooleanAnswer = { type: 'boolean'; probability: number };
 
-async function runEvaluate<T>(payload: object): Promise<{ answer: T; confidence: number | null }> {
+type EvalMeta = { confidence: number | null; inputTokens: number | null; costUsd: number | null };
+
+async function runEvaluate<T>(payload: object): Promise<{ answer: T } & EvalMeta> {
   const res = await fetch('/api/evaluate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -38,6 +40,12 @@ async function runEvaluate<T>(payload: object): Promise<{ answer: T; confidence:
   const json = await res.json();
   if (!res.ok) throw new Error(json.error ?? 'Request failed.');
   return json;
+}
+
+function formatCost(costUsd: number | null, inputTokens: number | null) {
+  if (costUsd === null) return null;
+  const amount = costUsd < 0.01 ? costUsd.toFixed(6) : costUsd.toFixed(4);
+  return inputTokens !== null ? `$${amount} · ${inputTokens} tok` : `$${amount}`;
 }
 
 export default function JevDemoPage() {
@@ -81,9 +89,7 @@ function ChoiceSection() {
     { id: 3, key: 'support', description: 'Account access and billing questions' },
   ]);
   const [status, setStatus] = useState<Status>('idle');
-  const [result, setResult] = useState<{ answer: ChoiceAnswer; confidence: number | null } | null>(
-    null,
-  );
+  const [result, setResult] = useState<({ answer: ChoiceAnswer } & EvalMeta) | null>(null);
   const [error, setError] = useState('');
 
   const updateOption = (id: number, field: 'key' | 'description', value: string) => {
@@ -106,7 +112,7 @@ function ChoiceSection() {
     try {
       const criteria = Object.fromEntries(options.map((o) => [o.key, o.description]));
       const data = await runEvaluate<ChoiceAnswer>({ type: 'choice', state, instructions, criteria });
-      setResult(data as { answer: ChoiceAnswer; confidence: number | null });
+      setResult(data as { answer: ChoiceAnswer } & EvalMeta);
       setStatus('done');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Something went wrong.');
@@ -194,8 +200,11 @@ function ChoiceSection() {
       {status === 'done' && result && (
         <div className={styles.result}>
           <div className={styles.resultHeadline}>{result.answer.choice}</div>
-          {result.confidence !== null && (
-            <div className={styles.confidence}>confidence {result.confidence.toFixed(2)}</div>
+          {(result.confidence !== null || result.costUsd !== null) && (
+            <div className={styles.confidence}>
+              <span>{result.confidence !== null ? `confidence ${result.confidence.toFixed(2)}` : ''}</span>
+              <span>{formatCost(result.costUsd, result.inputTokens)}</span>
+            </div>
           )}
           {Object.entries(result.answer.probabilities)
             .sort((a, b) => b[1] - a[1])
@@ -234,9 +243,7 @@ function ScoreSection() {
     'Makes the product unusable',
   ]);
   const [status, setStatus] = useState<Status>('idle');
-  const [result, setResult] = useState<{ answer: ScoreAnswer; confidence: number | null } | null>(
-    null,
-  );
+  const [result, setResult] = useState<({ answer: ScoreAnswer } & EvalMeta) | null>(null);
   const [error, setError] = useState('');
 
   const updateLevel = (i: number, value: string) => {
@@ -263,7 +270,7 @@ function ScoreSection() {
         instructions,
         criteria: levels,
       });
-      setResult(data as { answer: ScoreAnswer; confidence: number | null });
+      setResult(data as { answer: ScoreAnswer } & EvalMeta);
       setStatus('done');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Something went wrong.');
@@ -343,8 +350,11 @@ function ScoreSection() {
               / {levels.length - 1}
             </span>
           </div>
-          {result.confidence !== null && (
-            <div className={styles.confidence}>confidence {result.confidence.toFixed(2)}</div>
+          {(result.confidence !== null || result.costUsd !== null) && (
+            <div className={styles.confidence}>
+              <span>{result.confidence !== null ? `confidence ${result.confidence.toFixed(2)}` : ''}</span>
+              <span>{formatCost(result.costUsd, result.inputTokens)}</span>
+            </div>
           )}
           {Object.entries(result.answer.probabilities)
             .sort((a, b) => Number(a[0]) - Number(b[0]))
@@ -375,9 +385,7 @@ function BooleanSection() {
   const [trueDesc, setTrueDesc] = useState('Customer explicitly wants money back');
   const [falseDesc, setFalseDesc] = useState('Customer is not requesting a refund');
   const [status, setStatus] = useState<Status>('idle');
-  const [result, setResult] = useState<{ answer: BooleanAnswer; confidence: number | null } | null>(
-    null,
-  );
+  const [result, setResult] = useState<({ answer: BooleanAnswer } & EvalMeta) | null>(null);
   const [error, setError] = useState('');
 
   const run = async () => {
@@ -394,7 +402,7 @@ function BooleanSection() {
         instructions,
         criteria,
       });
-      setResult(data as { answer: BooleanAnswer; confidence: number | null });
+      setResult(data as { answer: BooleanAnswer } & EvalMeta);
       setStatus('done');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Something went wrong.');
@@ -475,6 +483,12 @@ function BooleanSection() {
               — {label(result.answer.probability)}
             </span>
           </div>
+          {result.costUsd !== null && (
+            <div className={styles.confidence}>
+              <span />
+              <span>{formatCost(result.costUsd, result.inputTokens)}</span>
+            </div>
+          )}
           <div className={styles.gauge}>
             <div
               className={styles.gaugeMarker}

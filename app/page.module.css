@@ -226,6 +226,9 @@
 }
 
 .confidence {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
   font-family: var(--font-mono), monospace;
   font-size: 0.75rem;
   color: var(--ink-dim);

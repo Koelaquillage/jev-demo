@@ -24,6 +24,9 @@ type BooleanPayload = {
 
 type Payload = ChoicePayload | ScorePayload | BooleanPayload;
 
+// Jev pricing on AI Gateway: $0.042 per 1M input tokens, no separate output charge.
+const PRICE_PER_MILLION_INPUT_TOKENS = 0.042;
+
 export async function POST(request: Request) {
   let body: Payload;
 
@@ -65,7 +68,7 @@ export async function POST(request: Request) {
   }
 
   try {
-        const result = await evaluate({
+    const result = await evaluate({
       model: 'typesafe-ai/jev',
       state,
       questions: { result: question as never },
@@ -75,7 +78,16 @@ export async function POST(request: Request) {
       result.providerMetadata?.typesafe as { confidence?: Record<string, number> } | undefined
     )?.confidence?.result;
 
-    return NextResponse.json({ answer: result.answers.result, confidence: confidence ?? null });
+    const inputTokens = result.usage?.inputTokens ?? null;
+    const costUsd =
+      inputTokens !== null ? (inputTokens / 1_000_000) * PRICE_PER_MILLION_INPUT_TOKENS : null;
+
+    return NextResponse.json({
+      answer: result.answers.result,
+      confidence: confidence ?? null,
+      inputTokens,
+      costUsd,
+    });
   } catch (err) {
     console.error('Jev evaluation failed:', err);
     const message = err instanceof Error ? err.message : 'Evaluation failed.';
