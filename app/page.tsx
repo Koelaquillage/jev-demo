@@ -56,8 +56,9 @@ async function callDecision<T>(
 }
 
 function formatCost(costUsd: number | null, inputTokens: number | null) {
-  if (costUsd === null) return '';
-  const amount = costUsd < 0.01 ? costUsd.toFixed(6) : costUsd.toFixed(4);
+  const value = typeof costUsd === 'number' ? costUsd : Number(costUsd);
+  if (costUsd === null || Number.isNaN(value)) return '';
+  const amount = value < 0.01 ? value.toFixed(6) : value.toFixed(4);
   return inputTokens !== null ? `$${amount} · ${inputTokens} tok` : `$${amount}`;
 }
 
