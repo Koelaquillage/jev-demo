@@ -28,25 +28,187 @@ type Status = 'idle' | 'loading' | 'done' | 'error';
 type ChoiceAnswer = { type: 'choice'; choice: string; probabilities: Record<string, number> };
 type ScoreAnswer = { type: 'score'; score: number; probabilities: Record<string, number> };
 type BooleanAnswer = { type: 'boolean'; probability: number };
+type Answer = ChoiceAnswer | ScoreAnswer | BooleanAnswer;
 
-type EvalMeta = { confidence: number | null; inputTokens: number | null; costUsd: number | null };
+type EvalMeta = {
+  confidence: number | null;
+  inputTokens: number | null;
+  costUsd: number | null;
+  latencyMs: number;
+};
 
-async function runEvaluate<T>(payload: object): Promise<{ answer: T } & EvalMeta> {
-  const res = await fetch('/api/evaluate', {
+const DEFAULT_COMPARE_MODEL = 'openai/gpt-5.4-mini';
+
+async function callDecision<T>(
+  payload: object,
+  endpoint: '/api/evaluate' | '/api/compare' = '/api/evaluate',
+): Promise<{ answer: T } & EvalMeta> {
+  const start = performance.now();
+  const res = await fetch(endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
+  const latencyMs = Math.round(performance.now() - start);
   const json = await res.json();
   if (!res.ok) throw new Error(json.error ?? 'Request failed.');
-  return json;
+  return { confidence: null, inputTokens: null, costUsd: null, ...json, latencyMs };
 }
 
 function formatCost(costUsd: number | null, inputTokens: number | null) {
-  if (costUsd === null) return null;
+  if (costUsd === null) return '';
   const amount = costUsd < 0.01 ? costUsd.toFixed(6) : costUsd.toFixed(4);
   return inputTokens !== null ? `$${amount} · ${inputTokens} tok` : `$${amount}`;
 }
+
+function formatDelta(jevCost: number, otherCost: number, otherLabel: string) {
+  if (jevCost <= 0 || otherCost <= 0) return null;
+  const ratio = otherCost / jevCost;
+  if (ratio >= 1) {
+    return `Jev cost ${ratio < 10 ? ratio.toFixed(1) : Math.round(ratio).toLocaleString()}\u00d7 less than ${otherLabel} for this call.`;
+  }
+  return `${otherLabel} cost ${(1 / ratio).toFixed(1)}\u00d7 less than Jev for this call.`;
+}
+
+/* ------------------------------- Shared result view ------------------------------- */
+
+function ResultBlock({
+  answer,
+  confidence,
+  costUsd,
+  inputTokens,
+  latencyMs,
+  levels,
+}: {
+  answer: Answer;
+  confidence: number | null;
+  costUsd: number | null;
+  inputTokens: number | null;
+  latencyMs: number | null;
+  levels?: string[];
+}) {
+  const metaLeft = confidence !== null ? `confidence ${confidence.toFixed(2)}` : '';
+  const metaRight = [formatCost(costUsd, inputTokens), latencyMs !== null ? `${latencyMs}ms` : '']
+    .filter(Boolean)
+    .join(' · ');
+
+  if (answer.type === 'choice') {
+    return (
+      <div>
+        <div className={styles.resultHeadline}>{answer.choice}</div>
+        {(metaLeft || metaRight) && (
+          <div className={styles.confidence}>
+            <span>{metaLeft}</span>
+            <span>{metaRight}</span>
+          </div>
+        )}
+        {Object.entries(answer.probabilities)
+          .sort((a, b) => b[1] - a[1])
+          .map(([key, value]) => (
+            <div className={styles.bar} key={key}>
+              <div className={styles.barTop}>
+                <span
+                  className={`${styles.barKey} ${key === answer.choice ? styles.winner : ''}`}
+                >
+                  {key}
+                </span>
+                <span className={styles.barValue}>{value.toFixed(2)}</span>
+              </div>
+              <div className={styles.barTrack}>
+                <div className={styles.barFill} style={{ width: `${value * 100}%` }} />
+              </div>
+            </div>
+          ))}
+      </div>
+    );
+  }
+
+  if (answer.type === 'score') {
+    const max = levels ? levels.length - 1 : undefined;
+    return (
+      <div>
+        <div className={styles.resultHeadline}>
+          {answer.score.toFixed(2)}{' '}
+          {max !== undefined && (
+            <span style={{ color: 'var(--ink-dim)', fontSize: '1rem' }}>/ {max}</span>
+          )}
+        </div>
+        {(metaLeft || metaRight) && (
+          <div className={styles.confidence}>
+            <span>{metaLeft}</span>
+            <span>{metaRight}</span>
+          </div>
+        )}
+        {Object.entries(answer.probabilities)
+          .sort((a, b) => Number(a[0]) - Number(b[0]))
+          .map(([idx, value]) => (
+            <div className={styles.bar} key={idx}>
+              <div className={styles.barTop}>
+                <span className={styles.barKey}>{levels?.[Number(idx)] ?? idx}</span>
+                <span className={styles.barValue}>{value.toFixed(2)}</span>
+              </div>
+              <div className={styles.barTrack}>
+                <div className={styles.barFill} style={{ width: `${value * 100}%` }} />
+              </div>
+            </div>
+          ))}
+      </div>
+    );
+  }
+
+  const p = answer.probability;
+  const label = p >= 0.8 ? 'likely true' : p <= 0.2 ? 'likely false' : 'uncertain';
+  return (
+    <div>
+      <div className={styles.resultHeadline}>
+        {p.toFixed(2)} <span style={{ color: 'var(--ink-dim)', fontSize: '1rem' }}>— {label}</span>
+      </div>
+      {metaRight && (
+        <div className={styles.confidence}>
+          <span />
+          <span>{metaRight}</span>
+        </div>
+      )}
+      <div className={styles.gauge}>
+        <div className={styles.gaugeMarker} style={{ left: `${p * 100}%` }} />
+      </div>
+      <div className={styles.gaugeLabels}>
+        <span>false</span>
+        <span>true</span>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------- Compare-with-an-LLM row ------------------------------- */
+
+function CompareRow({
+  compareModel,
+  setCompareModel,
+  onCompare,
+  loading,
+}: {
+  compareModel: string;
+  setCompareModel: (v: string) => void;
+  onCompare: () => void;
+  loading: boolean;
+}) {
+  return (
+    <div className={styles.compareRow}>
+      <input
+        className={styles.input}
+        value={compareModel}
+        onChange={(e) => setCompareModel(e.target.value)}
+        placeholder={DEFAULT_COMPARE_MODEL}
+      />
+      <button type="button" className={styles.smallButton} onClick={onCompare} disabled={loading}>
+        {loading ? 'Asking the LLM…' : 'Compare with this model'}
+      </button>
+    </div>
+  );
+}
+
+/* ---------------------------------------- Page ---------------------------------------- */
 
 export default function JevDemoPage() {
   return (
@@ -61,7 +223,9 @@ export default function JevDemoPage() {
         <p className={styles.leadFollow}>
           Jev never argues its case. It doesn&apos;t write, reason aloud, or hedge in prose. It
           reads the state you give it and returns a typed answer: a chosen option, a place on a
-          scale, or the odds of a single yes. Three shapes, tried below.
+          scale, or the odds of a single yes. Three shapes, tried below — each with the option to
+          run the identical question through an ordinary LLM, so you can see the cost side by
+          side.
         </p>
 
         <ChoiceSection />
@@ -69,7 +233,9 @@ export default function JevDemoPage() {
         <BooleanSection />
 
         <p className={styles.footer}>
-          Every run below calls Jev live through the AI Gateway. Nothing is cached or scripted.
+          Every run below calls Jev — and, where you ask for one, a comparison model — live
+          through the AI Gateway. Nothing is cached or scripted. The comparison model reports its
+          own probabilities; unlike Jev&apos;s, they are not calibrated.
         </p>
       </div>
     </main>
@@ -92,6 +258,13 @@ function ChoiceSection() {
   const [result, setResult] = useState<({ answer: ChoiceAnswer } & EvalMeta) | null>(null);
   const [error, setError] = useState('');
 
+  const [compareModel, setCompareModel] = useState(DEFAULT_COMPARE_MODEL);
+  const [compareStatus, setCompareStatus] = useState<Status>('idle');
+  const [compareResult, setCompareResult] = useState<({ answer: ChoiceAnswer } & EvalMeta) | null>(
+    null,
+  );
+  const [compareError, setCompareError] = useState('');
+
   const updateOption = (id: number, field: 'key' | 'description', value: string) => {
     setOptions((prev) => prev.map((o) => (o.id === id ? { ...o, [field]: value } : o)));
   };
@@ -106,17 +279,39 @@ function ChoiceSection() {
     setOptions((prev) => prev.filter((o) => o.id !== id));
   };
 
+  const criteria = () => Object.fromEntries(options.map((o) => [o.key, o.description]));
+
   const run = async () => {
     setStatus('loading');
     setError('');
     try {
-      const criteria = Object.fromEntries(options.map((o) => [o.key, o.description]));
-      const data = await runEvaluate<ChoiceAnswer>({ type: 'choice', state, instructions, criteria });
-      setResult(data as { answer: ChoiceAnswer } & EvalMeta);
+      const data = await callDecision<ChoiceAnswer>({
+        type: 'choice',
+        state,
+        instructions,
+        criteria: criteria(),
+      });
+      setResult(data);
       setStatus('done');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Something went wrong.');
       setStatus('error');
+    }
+  };
+
+  const runCompare = async () => {
+    setCompareStatus('loading');
+    setCompareError('');
+    try {
+      const data = await callDecision<ChoiceAnswer>(
+        { type: 'choice', state, instructions, criteria: criteria(), model: compareModel },
+        '/api/compare',
+      );
+      setCompareResult(data);
+      setCompareStatus('done');
+    } catch (e) {
+      setCompareError(e instanceof Error ? e.message : 'Something went wrong.');
+      setCompareStatus('error');
     }
   };
 
@@ -195,34 +390,53 @@ function ChoiceSection() {
         {status === 'loading' ? 'Deciding…' : 'Run choice'}
       </button>
 
+      <div className={styles.field}>
+        <label className={styles.label}>Compare against (any AI Gateway model id)</label>
+        <CompareRow
+          compareModel={compareModel}
+          setCompareModel={setCompareModel}
+          onCompare={runCompare}
+          loading={compareStatus === 'loading'}
+        />
+      </div>
+
       {status === 'error' && <p className={styles.errorText}>{error}</p>}
+      {compareStatus === 'error' && <p className={styles.errorText}>{compareError}</p>}
 
       {status === 'done' && result && (
         <div className={styles.result}>
-          <div className={styles.resultHeadline}>{result.answer.choice}</div>
-          {(result.confidence !== null || result.costUsd !== null) && (
-            <div className={styles.confidence}>
-              <span>{result.confidence !== null ? `confidence ${result.confidence.toFixed(2)}` : ''}</span>
-              <span>{formatCost(result.costUsd, result.inputTokens)}</span>
+          <div className={styles.compareGrid}>
+            <div>
+              <div className={styles.resultLabel}>Jev</div>
+              <ResultBlock
+                answer={result.answer}
+                confidence={result.confidence}
+                costUsd={result.costUsd}
+                inputTokens={result.inputTokens}
+                latencyMs={result.latencyMs}
+              />
             </div>
-          )}
-          {Object.entries(result.answer.probabilities)
-            .sort((a, b) => b[1] - a[1])
-            .map(([key, value]) => (
-              <div className={styles.bar} key={key}>
-                <div className={styles.barTop}>
-                  <span
-                    className={`${styles.barKey} ${key === result.answer.choice ? styles.winner : ''}`}
-                  >
-                    {key}
-                  </span>
-                  <span className={styles.barValue}>{value.toFixed(2)}</span>
-                </div>
-                <div className={styles.barTrack}>
-                  <div className={styles.barFill} style={{ width: `${value * 100}%` }} />
-                </div>
+            {compareStatus === 'done' && compareResult && (
+              <div>
+                <div className={styles.resultLabel}>{compareModel}</div>
+                <ResultBlock
+                  answer={compareResult.answer}
+                  confidence={null}
+                  costUsd={compareResult.costUsd}
+                  inputTokens={compareResult.inputTokens}
+                  latencyMs={compareResult.latencyMs}
+                />
               </div>
-            ))}
+            )}
+          </div>
+          {compareStatus === 'done' &&
+            compareResult &&
+            result.costUsd !== null &&
+            compareResult.costUsd !== null && (
+              <p className={styles.deltaLine}>
+                {formatDelta(result.costUsd, compareResult.costUsd, compareModel)}
+              </p>
+            )}
         </div>
       )}
     </section>
@@ -246,6 +460,13 @@ function ScoreSection() {
   const [result, setResult] = useState<({ answer: ScoreAnswer } & EvalMeta) | null>(null);
   const [error, setError] = useState('');
 
+  const [compareModel, setCompareModel] = useState(DEFAULT_COMPARE_MODEL);
+  const [compareStatus, setCompareStatus] = useState<Status>('idle');
+  const [compareResult, setCompareResult] = useState<({ answer: ScoreAnswer } & EvalMeta) | null>(
+    null,
+  );
+  const [compareError, setCompareError] = useState('');
+
   const updateLevel = (i: number, value: string) => {
     setLevels((prev) => prev.map((l, idx) => (idx === i ? value : l)));
   };
@@ -264,17 +485,33 @@ function ScoreSection() {
     setStatus('loading');
     setError('');
     try {
-      const data = await runEvaluate<ScoreAnswer>({
+      const data = await callDecision<ScoreAnswer>({
         type: 'score',
         state,
         instructions,
         criteria: levels,
       });
-      setResult(data as { answer: ScoreAnswer } & EvalMeta);
+      setResult(data);
       setStatus('done');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Something went wrong.');
       setStatus('error');
+    }
+  };
+
+  const runCompare = async () => {
+    setCompareStatus('loading');
+    setCompareError('');
+    try {
+      const data = await callDecision<ScoreAnswer>(
+        { type: 'score', state, instructions, criteria: levels, model: compareModel },
+        '/api/compare',
+      );
+      setCompareResult(data);
+      setCompareStatus('done');
+    } catch (e) {
+      setCompareError(e instanceof Error ? e.message : 'Something went wrong.');
+      setCompareStatus('error');
     }
   };
 
@@ -312,7 +549,11 @@ function ScoreSection() {
         {levels.map((l, i) => (
           <div className={styles.row} key={i}>
             <div className={styles.rowDesc}>
-              <input className={styles.input} value={l} onChange={(e) => updateLevel(i, e.target.value)} />
+              <input
+                className={styles.input}
+                value={l}
+                onChange={(e) => updateLevel(i, e.target.value)}
+              />
             </div>
             <button
               type="button"
@@ -340,35 +581,55 @@ function ScoreSection() {
         {status === 'loading' ? 'Grading…' : 'Run score'}
       </button>
 
+      <div className={styles.field}>
+        <label className={styles.label}>Compare against (any AI Gateway model id)</label>
+        <CompareRow
+          compareModel={compareModel}
+          setCompareModel={setCompareModel}
+          onCompare={runCompare}
+          loading={compareStatus === 'loading'}
+        />
+      </div>
+
       {status === 'error' && <p className={styles.errorText}>{error}</p>}
+      {compareStatus === 'error' && <p className={styles.errorText}>{compareError}</p>}
 
       {status === 'done' && result && (
         <div className={styles.result}>
-          <div className={styles.resultHeadline}>
-            {result.answer.score.toFixed(2)}{' '}
-            <span style={{ color: 'var(--ink-dim)', fontSize: '1rem' }}>
-              / {levels.length - 1}
-            </span>
-          </div>
-          {(result.confidence !== null || result.costUsd !== null) && (
-            <div className={styles.confidence}>
-              <span>{result.confidence !== null ? `confidence ${result.confidence.toFixed(2)}` : ''}</span>
-              <span>{formatCost(result.costUsd, result.inputTokens)}</span>
+          <div className={styles.compareGrid}>
+            <div>
+              <div className={styles.resultLabel}>Jev</div>
+              <ResultBlock
+                answer={result.answer}
+                confidence={result.confidence}
+                costUsd={result.costUsd}
+                inputTokens={result.inputTokens}
+                latencyMs={result.latencyMs}
+                levels={levels}
+              />
             </div>
-          )}
-          {Object.entries(result.answer.probabilities)
-            .sort((a, b) => Number(a[0]) - Number(b[0]))
-            .map(([idx, value]) => (
-              <div className={styles.bar} key={idx}>
-                <div className={styles.barTop}>
-                  <span className={styles.barKey}>{levels[Number(idx)] ?? idx}</span>
-                  <span className={styles.barValue}>{value.toFixed(2)}</span>
-                </div>
-                <div className={styles.barTrack}>
-                  <div className={styles.barFill} style={{ width: `${value * 100}%` }} />
-                </div>
+            {compareStatus === 'done' && compareResult && (
+              <div>
+                <div className={styles.resultLabel}>{compareModel}</div>
+                <ResultBlock
+                  answer={compareResult.answer}
+                  confidence={null}
+                  costUsd={compareResult.costUsd}
+                  inputTokens={compareResult.inputTokens}
+                  latencyMs={compareResult.latencyMs}
+                  levels={levels}
+                />
               </div>
-            ))}
+            )}
+          </div>
+          {compareStatus === 'done' &&
+            compareResult &&
+            result.costUsd !== null &&
+            compareResult.costUsd !== null && (
+              <p className={styles.deltaLine}>
+                {formatDelta(result.costUsd, compareResult.costUsd, compareModel)}
+              </p>
+            )}
         </div>
       )}
     </section>
@@ -388,21 +649,27 @@ function BooleanSection() {
   const [result, setResult] = useState<({ answer: BooleanAnswer } & EvalMeta) | null>(null);
   const [error, setError] = useState('');
 
+  const [compareModel, setCompareModel] = useState(DEFAULT_COMPARE_MODEL);
+  const [compareStatus, setCompareStatus] = useState<Status>('idle');
+  const [compareResult, setCompareResult] = useState<({ answer: BooleanAnswer } & EvalMeta) | null>(
+    null,
+  );
+  const [compareError, setCompareError] = useState('');
+
+  const criteria = () =>
+    trueDesc || falseDesc ? { true: trueDesc || undefined, false: falseDesc || undefined } : undefined;
+
   const run = async () => {
     setStatus('loading');
     setError('');
     try {
-      const criteria =
-        trueDesc || falseDesc
-          ? { true: trueDesc || undefined, false: falseDesc || undefined }
-          : undefined;
-      const data = await runEvaluate<BooleanAnswer>({
+      const data = await callDecision<BooleanAnswer>({
         type: 'boolean',
         state,
         instructions,
-        criteria,
+        criteria: criteria(),
       });
-      setResult(data as { answer: BooleanAnswer } & EvalMeta);
+      setResult(data);
       setStatus('done');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Something went wrong.');
@@ -410,10 +677,20 @@ function BooleanSection() {
     }
   };
 
-  const label = (p: number) => {
-    if (p >= 0.8) return 'likely true';
-    if (p <= 0.2) return 'likely false';
-    return 'uncertain';
+  const runCompare = async () => {
+    setCompareStatus('loading');
+    setCompareError('');
+    try {
+      const data = await callDecision<BooleanAnswer>(
+        { type: 'boolean', state, instructions, criteria: criteria(), model: compareModel },
+        '/api/compare',
+      );
+      setCompareResult(data);
+      setCompareStatus('done');
+    } catch (e) {
+      setCompareError(e instanceof Error ? e.message : 'Something went wrong.');
+      setCompareStatus('error');
+    }
   };
 
   return (
@@ -473,32 +750,53 @@ function BooleanSection() {
         {status === 'loading' ? 'Asking…' : 'Run noul'}
       </button>
 
+      <div className={styles.field}>
+        <label className={styles.label}>Compare against (any AI Gateway model id)</label>
+        <CompareRow
+          compareModel={compareModel}
+          setCompareModel={setCompareModel}
+          onCompare={runCompare}
+          loading={compareStatus === 'loading'}
+        />
+      </div>
+
       {status === 'error' && <p className={styles.errorText}>{error}</p>}
+      {compareStatus === 'error' && <p className={styles.errorText}>{compareError}</p>}
 
       {status === 'done' && result && (
         <div className={styles.result}>
-          <div className={styles.resultHeadline}>
-            {result.answer.probability.toFixed(2)}{' '}
-            <span style={{ color: 'var(--ink-dim)', fontSize: '1rem' }}>
-              — {label(result.answer.probability)}
-            </span>
-          </div>
-          {result.costUsd !== null && (
-            <div className={styles.confidence}>
-              <span />
-              <span>{formatCost(result.costUsd, result.inputTokens)}</span>
+          <div className={styles.compareGrid}>
+            <div>
+              <div className={styles.resultLabel}>Jev</div>
+              <ResultBlock
+                answer={result.answer}
+                confidence={result.confidence}
+                costUsd={result.costUsd}
+                inputTokens={result.inputTokens}
+                latencyMs={result.latencyMs}
+              />
             </div>
-          )}
-          <div className={styles.gauge}>
-            <div
-              className={styles.gaugeMarker}
-              style={{ left: `${result.answer.probability * 100}%` }}
-            />
+            {compareStatus === 'done' && compareResult && (
+              <div>
+                <div className={styles.resultLabel}>{compareModel}</div>
+                <ResultBlock
+                  answer={compareResult.answer}
+                  confidence={null}
+                  costUsd={compareResult.costUsd}
+                  inputTokens={compareResult.inputTokens}
+                  latencyMs={compareResult.latencyMs}
+                />
+              </div>
+            )}
           </div>
-          <div className={styles.gaugeLabels}>
-            <span>false</span>
-            <span>true</span>
-          </div>
+          {compareStatus === 'done' &&
+            compareResult &&
+            result.costUsd !== null &&
+            compareResult.costUsd !== null && (
+              <p className={styles.deltaLine}>
+                {formatDelta(result.costUsd, compareResult.costUsd, compareModel)}
+              </p>
+            )}
         </div>
       )}
     </section>

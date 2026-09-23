@@ -79,8 +79,10 @@ export async function POST(request: Request) {
     )?.confidence?.result;
 
     const inputTokens = result.usage?.inputTokens ?? null;
-    const costUsd =
+    const gatewayCost = (result.providerMetadata?.gateway as { cost?: number } | undefined)?.cost;
+    const estimatedCost =
       inputTokens !== null ? (inputTokens / 1_000_000) * PRICE_PER_MILLION_INPUT_TOKENS : null;
+    const costUsd = gatewayCost ?? estimatedCost;
 
     return NextResponse.json({
       answer: result.answers.result,

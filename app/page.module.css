@@ -304,3 +304,42 @@
   color: var(--ink-dim);
   font-size: 0.8125rem;
 }
+
+/* Compare-with-an-LLM */
+
+.compareRow {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.compareRow input {
+  flex: 1;
+}
+
+.compareGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2.5rem;
+}
+
+@media (max-width: 640px) {
+  .compareGrid {
+    grid-template-columns: 1fr;
+    gap: 2rem;
+  }
+}
+
+.resultLabel {
+  font-family: var(--font-mono), monospace;
+  font-size: 0.75rem;
+  color: var(--brass);
+  margin-bottom: 0.75rem;
+}
+
+.deltaLine {
+  margin-top: 1.75rem;
+  padding-top: 1.25rem;
+  border-top: 1px dashed var(--line);
+  font-size: 0.875rem;
+}
